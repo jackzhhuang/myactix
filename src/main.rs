@@ -1,7 +1,10 @@
-use std::os::unix::prelude::PermissionsExt;
+use std::{os::unix::prelude::PermissionsExt, process::Output, time::{Instant, Duration}, thread::{Thread, self}};
+use futures::stream::{self, StreamExt};
 
 use actix::prelude::*;
 use anyhow;
+use futures_core::{future::BoxFuture, Future};
+use futures_util::SinkExt;
 
 #[derive(Debug, MessageResponse)]
 struct MyReturn {
@@ -108,7 +111,7 @@ impl MyEvent {
 }
 
 
-fn main() {
+fn test_actix() {
     let system = actix::prelude::System::new();
 
     let fut = async {
@@ -139,8 +142,70 @@ fn main() {
         println!("when will it be printed?, thread id = {:?}", std::thread::current().id());
     });
 
-
-
-
     system.run().unwrap();
+}
+
+struct CountingTask {
+    nunmber: u64,
+    when: Instant,
+}
+
+impl CountingTask {
+    pub fn new(n: u64) -> Self {
+        CountingTask { nunmber: n, when: Instant::now() }
+    }    
+}
+
+impl futures::Future for CountingTask {
+    type Output = u64;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        if Duration::from_secs(self.as_ref().nunmber)  >= (self.when - Instant::now()) {
+            return std::task::Poll::Ready(self.as_ref().nunmber);
+        }
+        let timeout = self.as_ref().nunmber;
+        let waker = cx.waker().clone();
+        tokio::spawn(async move {
+            thread::sleep(Duration::from_secs(timeout));
+            waker.wake();
+        });
+        std::task::Poll::Pending
+    }
+}
+
+struct TaskStream {
+    number: u64,
+    current: u64,
+}
+
+impl TaskStream {
+    pub fn new(n: u64) -> Self {
+        TaskStream { number: n, current: 0 }
+    } 
+}
+
+impl futures::Stream for TaskStream {
+    type Item = CountingTask;
+
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        let current = self.as_ref().current;
+        if  current < self.as_ref().number {
+            let task = CountingTask::new(current);
+            let s = self.get_mut();
+            s.current += 1;
+            return std::task::Poll::Ready(Some(task));
+        }
+        std::task::Poll::Ready(None)
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let stream = TaskStream::new(3);
+    let result = stream.buffered(1024).map(|result| {
+        result * 2
+    }).collect::<Vec<u64>>();
+    let result = result.await;
+
+    println!("result = {:?}", result);
 }
