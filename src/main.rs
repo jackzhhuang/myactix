@@ -1,10 +1,10 @@
-use std::{os::unix::prelude::PermissionsExt, process::Output, time::{Instant, Duration}, thread::{Thread, self}};
+use std::{os::unix::prelude::PermissionsExt, process::Output, time::{Instant, Duration}, thread::{Thread, self}, fmt::Display, any::TypeId};
 use futures::stream::{self, StreamExt};
 
 use actix::prelude::*;
 use anyhow;
 use futures_core::{future::BoxFuture, Future};
-use futures_util::SinkExt;
+use futures_util::{SinkExt, io::Close};
 
 #[derive(Debug, MessageResponse)]
 struct MyReturn {
@@ -160,7 +160,7 @@ impl futures::Future for CountingTask {
     type Output = u64;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        if Duration::from_secs(self.as_ref().nunmber)  >= (self.when - Instant::now()) {
+        if self.as_ref().nunmber <= (Instant::now() - self.when).as_secs() {
             return std::task::Poll::Ready(self.as_ref().nunmber);
         }
         let timeout = self.as_ref().nunmber;
@@ -199,13 +199,63 @@ impl futures::Stream for TaskStream {
     }
 }
 
-#[tokio::main]
-async fn main() {
+#[derive(Debug)]
+struct MySink;
+
+impl MySink {
+    pub fn new() -> Self {
+        MySink
+    } 
+}
+
+impl<Item> futures::Sink<Item> for MySink where Item: std::fmt::Debug {
+    type Error = anyhow::Error;
+
+    fn poll_ready(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        println!("poll ready");
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
+        println!("start send, {:?}",  item);
+        Ok(())
+    }
+
+    fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        println!("poll close");
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+async fn test_stream() {
     let stream = TaskStream::new(3);
-    let result = stream.buffered(1024).map(|result| {
-        result * 2
-    }).collect::<Vec<u64>>();
+    let result = stream.buffered(1024).collect::<Vec<u64>>();
     let result = result.await;
 
     println!("result = {:?}", result);
+}
+
+async fn test_stream_vec() {
+    let myvec = vec![101, 102, 103];
+    let mut v = futures::stream::iter(myvec.into_iter()).collect::<Vec<i32>>();
+    println!("v = {:?}", v.await);
+}
+
+async fn test_sink() {
+    let stream = TaskStream::new(3);
+    let mut mysink = MySink::new();
+    let mut iter = stream.buffered(1024).map(|item|Ok(item));
+    let result = mysink.send_all(&mut iter).await;
+    println!("{:?}", result);
+}
+
+#[tokio::main]
+async fn main() {
+    // test_stream().await;
+    // test_stream_vec().await;
+    // test_sink().await;
 }
